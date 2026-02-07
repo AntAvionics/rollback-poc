@@ -131,13 +131,19 @@ def handle_patch(payload: Dict[str, Any]) -> str:
     if state.lva is None:
         raise ValueError("PATCH received before FULL")
 
+    if patch.prev < state.lva:
+        logger.info(
+            "PATCH discarded (prev=%s) because current LVA=%s is higher",
+            patch.prev,
+            state.lva,
+        )
+        return "discarded"
     if patch.prev != state.lva:
         logger.warning(
             "PATCH queued (prev=%s, lva=%s)", patch.prev, state.lva
         )
         state.queued_patches.append(patch)
         return "queued"
-
     _apply_patch_internal(patch)
     try_apply_queued()
     return "applied"
