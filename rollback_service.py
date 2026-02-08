@@ -44,6 +44,10 @@ class AircraftState:
     # Queued patches waiting for prev == lva
     queued_patches: List[Patch] = field(default_factory=list)
 
+    # Failure simulation
+    simulate_failure: bool = False
+    failure_mode: str = "none"  # "validation_error", "apply_error", "rollback_error"
+
 
 state = AircraftState()
 
@@ -131,6 +135,10 @@ def handle_patch(payload: Dict[str, Any]) -> str:
     if state.lva is None:
         raise ValueError("PATCH received before FULL")
 
+    # Simulate validation failure
+    if state.simulate_failure and state.failure_mode == "validation_error":
+        raise ValueError("Simulated validation error in PATCH")
+
     if patch.prev < state.lva:
         logger.info(
             "PATCH discarded (prev=%s) because current LVA=%s is higher",
@@ -156,6 +164,11 @@ def handle_rollback(_: Dict[str, Any]) -> str:
       2) Hard reset to LKG
     """
     logger.warning("ROLLBACK requested")
+
+    # Simulate rollback failure mode
+    if state.simulate_failure and state.failure_mode == "rollback_error":
+        logger.error("Simulated rollback failure")
+        raise ValueError("Simulated rollback processing error")
 
     # Tier 1 — rebuild
     try:
@@ -244,6 +257,44 @@ def ping():
         "version": state.lva,
         "time": datetime.utcnow().isoformat() + "Z"
     })
+
+
+@app.route("/inject_fault", methods=["POST"])
+def inject_fault():
+    """
+    Control failure simulation via POST.
+    Body: {
+      "enabled": bool,
+      "mode": "validation_error" | "apply_error" | "rollback_error" | "none"
+    }
+    """
+    data = request.get_json(force=True)
+    enabled = data.get("enabled", False)
+    mode = data.get("mode", "none")
+
+    valid_modes = ["none", "validation_error", "apply_error", "rollback_error"]
+    if mode not in valid_modes:
+        return jsonify({"ok": False, "error": f"Invalid mode. Must be one of {valid_modes}"}), 400
+
+    with state.lock:
+        state.simulate_failure = enabled
+        state.failure_mode = mode if enabled else "none"
+        logger.info("Fault injection: enabled=%s mode=%s", state.simulate_failure, state.failure_mode)
+
+    return jsonify({
+        "ok": True,
+        "simulate_failure": state.simulate_failure,
+        "failure_mode": state.failure_mode
+    }), 200
+
+
+@app.route("/fault_status", methods=["GET"])
+def fault_status():
+    """Get current fault injection status."""
+    return jsonify({
+        "simulate_failure": state.simulate_failure,
+        "failure_mode": state.failure_mode
+    }), 200
 
 
 # ---------------------------------------------------------------------
