@@ -63,8 +63,23 @@ def validate_config(cfg: Dict[str, Any]) -> Optional[str]:
 
 
 def apply_patch(cfg: Dict[str, Any], patch: Patch) -> Dict[str, Any]:
+    """
+    Apply patch by doing a deep merge of changes into config.
+    Nested dicts are merged recursively, not replaced.
+    """
     new_cfg = deepcopy(cfg)
-    new_cfg.update(patch.changes)
+    
+    def deep_merge(target: Dict, updates: Dict) -> None:
+        """Recursively merge updates into target."""
+        for key, value in updates.items():
+            if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+                # Both are dicts: recurse
+                deep_merge(target[key], value)
+            else:
+                # Scalar or new key: replace/add
+                target[key] = value
+    
+    deep_merge(new_cfg, patch.changes)
     return new_cfg
 
 
@@ -114,8 +129,12 @@ def handle_full(payload: Dict[str, Any]):
     if err:
         raise ValueError(err)
 
-    state.lkg = deepcopy(data)
-    state.active = deepcopy(data)
+    # Store a copy of data with version metadata
+    data_with_version = deepcopy(data)
+    data_with_version["_version"] = version
+
+    state.lkg = data_with_version
+    state.active = deepcopy(data_with_version)
     state.lva = version
     state.applied_patches.clear()
     state.queued_patches.clear()
@@ -160,8 +179,8 @@ def handle_patch(payload: Dict[str, Any]) -> str:
 def handle_rollback(_: Dict[str, Any]) -> str:
     """
     Two-tier rollback:
-      1) Rebuild Active from LKG + applied patches
-      2) Hard reset to LKG
+      1) Simple reset to LKG (Last Known Good)
+      2) If validation fails, hard reset to empty state
     """
     logger.warning("ROLLBACK requested")
 
@@ -170,35 +189,35 @@ def handle_rollback(_: Dict[str, Any]) -> str:
         logger.error("Simulated rollback failure")
         raise ValueError("Simulated rollback processing error")
 
-    # Tier 1 — rebuild
+    # Tier 1 — reset to LKG
     try:
-        rebuilt = deepcopy(state.lkg)
-        version = state.lva
-
-        for p in state.applied_patches:
-            rebuilt = apply_patch(rebuilt, p)
-
-        err = validate_config(rebuilt)
+        reset_state = deepcopy(state.lkg)
+        original_version = reset_state.pop("_version", 1)  # Extract and remove version metadata
+        
+        err = validate_config(reset_state)
         if err:
             raise ValueError(err)
 
-        state.active = rebuilt
+        state.active = reset_state
+        state.lva = original_version
+        state.applied_patches.clear()
         state.queued_patches.clear()
 
-        logger.info("Rollback to LVA=%s successful", version)
-        return "rollback_lva"
+        logger.info("Rollback to LKG successful, reset to version=%s", state.lva)
+        return "rollback_lkg"
 
     except Exception as e:
-        logger.error("Rollback to LVA failed: %s", e)
+        logger.error("Rollback to LKG failed: %s", e)
 
-    # Tier 2 — hard reset
-    state.active = deepcopy(state.lkg)
+    # Tier 2 — hard reset (nuclear option)
+    state.active = {}
+    state.lkg = {}
     state.applied_patches.clear()
     state.queued_patches.clear()
     state.lva = None
 
-    logger.error("Rollback to LKG executed")
-    return "rollback_lkg"
+    logger.error("Hard reset executed - all state cleared")
+    return "rollback_hard_reset"
 
 # ---------------------------------------------------------------------
 # Routes
@@ -294,6 +313,25 @@ def fault_status():
     return jsonify({
         "simulate_failure": state.simulate_failure,
         "failure_mode": state.failure_mode
+    }), 200
+
+
+@app.route("/reset", methods=["POST"])
+def reset():
+    """Reset aircraft state to clean slate for demo purposes."""
+    with state.lock:
+        state.lkg = {}
+        state.active = {}
+        state.lva = None
+        state.applied_patches = []
+        state.queued_patches = []
+        state.simulate_failure = False
+        state.failure_mode = "none"
+        logger.info("Aircraft state reset to clean slate")
+    
+    return jsonify({
+        "ok": True,
+        "message": "Aircraft state reset to clean slate"
     }), 200
 
 
