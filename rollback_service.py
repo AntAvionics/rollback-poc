@@ -1,6 +1,7 @@
 import logging
 import threading
 from copy import deepcopy
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -43,6 +44,10 @@ class AircraftState:
 
     # Queued patches waiting for prev == lva
     queued_patches: List[Patch] = field(default_factory=list)
+
+    # LVA snapshot history for staged rollback (version → config)
+    lva_history: "OrderedDict[int, Dict[str, Any]]" = field(default_factory=OrderedDict)
+    history_limit: int = 20
 
     # Failure simulation
     simulate_failure: bool = False
@@ -112,11 +117,23 @@ def _apply_patch_internal(patch: Patch):
     # Advance version by exactly 1
     state.lva = state.lva + 1 if state.lva is not None else None
 
+    if state.lva is not None:
+        _save_snapshot(state.lva, state.active)
+
     logger.info("PATCH applied → new LVA=%s", state.lva)
 
 # ---------------------------------------------------------------------
 # Core handlers
 # ---------------------------------------------------------------------
+
+def _save_snapshot(version: int, cfg: Dict[str, Any]) -> None:
+    state.lva_history[version] = deepcopy(cfg)
+
+    # enforce bounded history
+    if len(state.lva_history) > state.history_limit:
+        excess = len(state.lva_history) - state.history_limit
+        for _ in range(excess):
+            state.lva_history.popitem(last=False)
 
 def handle_full(payload: Dict[str, Any]):
     version = payload.get("version")
@@ -138,6 +155,9 @@ def handle_full(payload: Dict[str, Any]):
     state.lva = version
     state.applied_patches.clear()
     state.queued_patches.clear()
+
+    state.lva_history.clear()
+    _save_snapshot(version, state.active)
 
     logger.info("FULL applied version=%s", version)
 
@@ -176,9 +196,38 @@ def handle_patch(payload: Dict[str, Any]) -> str:
     return "applied"
 
 
-def handle_rollback(_: Dict[str, Any]) -> str:
+def rollback_staged(max_steps: int = 5) -> bool:
+    if state.lva is None:
+        return False
+    steps = 0
+    while steps < max_steps:
+        current = state.lva
+        target = current - 1
+
+        if target not in state.lva_history:
+            return steps > 0 
+
+        candidate = deepcopy(state.lva_history[target])
+        err = validate_config(candidate)
+        if err:
+            return steps > 0
+
+        state.active = candidate
+        state.lva = target
+        state.applied_patches.clear()
+        state.queued_patches.clear()
+        _save_snapshot(state.lva, state.active)
+
+        logger.info("Staged rollback step %d: %s -> %s", steps + 1, current, target)
+        steps += 1
+    return steps > 0
+
+
+
+def handle_rollback(_: Dict[str, Any], max_steps: int = 5) -> str:
     """
-    Two-tier rollback:
+    Three-tier rollback:
+      0) Attempt staged rollback using LVA history snapshots (up to max_steps)
       1) Simple reset to LKG (Last Known Good)
       2) If validation fails, hard reset to empty state
     """
@@ -188,11 +237,20 @@ def handle_rollback(_: Dict[str, Any]) -> str:
     if state.simulate_failure and state.failure_mode == "rollback_error":
         logger.error("Simulated rollback failure")
         raise ValueError("Simulated rollback processing error")
+    
+    # Tier 0 - Try staged rollback first
+    try:
+        if rollback_staged(max_steps=max_steps):
+            return "rollback_staged"
+    except Exception as e:
+        logger.error("Staged rollback failed: %s", e)
 
     # Tier 1 — reset to LKG
     try:
         reset_state = deepcopy(state.lkg)
         original_version = reset_state.pop("_version", 1)  # Extract and remove version metadata
+        state.lva_history.clear()
+        _save_snapshot(state.lva, state.active)
         
         err = validate_config(reset_state)
         if err:
@@ -214,6 +272,7 @@ def handle_rollback(_: Dict[str, Any]) -> str:
     state.lkg = {}
     state.applied_patches.clear()
     state.queued_patches.clear()
+    state.lva_history.clear()
     state.lva = None
 
     logger.error("Hard reset executed - all state cleared")
@@ -325,6 +384,7 @@ def reset():
         state.lva = None
         state.applied_patches = []
         state.queued_patches = []
+        state.lva_history.clear() 
         state.simulate_failure = False
         state.failure_mode = "none"
         logger.info("Aircraft state reset to clean slate")
