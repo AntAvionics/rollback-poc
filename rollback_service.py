@@ -56,29 +56,9 @@ state = AircraftState()
 # ---------------------------------------------------------------------
 
 def validate_targeting(target):
-    if "flight_duration_min" not in target:
-        return "Minimum Flight Duration missing"
-    if "flight_duration_max" not in target:
-        return "Max Flight Duration missing"
-    if "time_of_day" not in target:
-        return "Time of day missing"
-    if "audience_tags" not in target:
-        return "Audience tags missing"
     return None
 
 def validate_config(cfg: Dict[str, Any]) -> Optional[str]:
-    for key, value  in cfg.items():
-        #Check if any keys are missing from cfg
-        if "priority" not in value:
-            return "Priority value missing"
-        if "targeting" not in value:
-            return "Targeting value missing"
-        
-        #Validate key,values inside targeting
-        target_status = validate_targeting(value["targeting"])
-        if target_status:
-            return target_status
-        
     return None
 
 
@@ -277,8 +257,8 @@ def receive():
             }), 422
 
 
-@app.route("/state", methods=["GET"])
-def get_state():
+@app.route("/aircraft_state", methods=["GET"])
+def aircraft_state():
     with state.lock:
         return jsonify({
             "lkg": state.lkg,
