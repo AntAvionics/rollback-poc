@@ -199,28 +199,27 @@ def handle_patch(payload: Dict[str, Any]) -> str:
 def rollback_staged(max_steps: int = 5) -> bool:
     if state.lva is None:
         return False
+    current = state.lva
     steps = 0
-    while steps < max_steps:
-        current = state.lva
-        target = current - 1
-
+    # Walk backward through history, up to max_steps
+    for i in range(1, max_steps + 1):
+        target = current - i
         if target not in state.lva_history:
-            return steps > 0 
-
+            break
         candidate = deepcopy(state.lva_history[target])
         err = validate_config(candidate)
-        if err:
-            return steps > 0
-
-        state.active = candidate
-        state.lva = target
-        state.applied_patches.clear()
-        state.queued_patches.clear()
-        _save_snapshot(state.lva, state.active)
-
-        logger.info("Staged rollback step %d: %s -> %s", steps + 1, current, target)
-        steps += 1
-    return steps > 0
+        if not err:
+            # Found first valid snapshot, restore and stop
+            state.active = candidate
+            state.lva = target
+            state.applied_patches.clear()
+            state.queued_patches.clear()
+            _save_snapshot(state.lva, state.active)
+            logger.info("Staged rollback: restored to LVA=%s after %d step(s)", target, i)
+            return True
+        else:
+            logger.info("Staged rollback: LVA=%s invalid, continuing", target)
+    return False
 
 
 
