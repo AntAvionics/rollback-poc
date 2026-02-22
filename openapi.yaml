@@ -1,0 +1,318 @@
+openapi: 3.0.0
+info:
+  title: Rollback Headend Manager API
+  description: >
+    OpenAPI specification for the headend_manager Flask application.
+    This API manages multiple "RollbackService" instances keyed by aircraft id.
+  version: "1.0.0"
+servers:
+  - url: http://localhost:9000
+    description: Local development server (headend_manager)
+paths:
+  /aircraft:
+    get:
+      summary: List known aircraft
+      description: List known aircraft and minimal info, including LVA and LKG version.
+      responses:
+        '200':
+          description: A map of known aircraft keyed by aircraft id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AircraftListResponse'
+  /aircraft/{aircraft_id}/receive:
+    post:
+      summary: Unified receive endpoint
+      description: >
+        Accept a message for the specified aircraft. The message has a `type`
+        and a `payload`. Supported `type` values: `FULL`, `PATCH`, `ROLLBACK`.
+      parameters:
+        - $ref: '#/components/parameters/aircraftId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReceiveRequest'
+      responses:
+        '200':
+          description: Successfully processed message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceiveResponse'
+        '400':
+          description: Invalid message (missing/invalid fields) or unknown type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Processing failed (server side error while handling payload)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessingErrorResponse'
+  /aircraft/{aircraft_id}/state:
+    get:
+      summary: Get aircraft state summary
+      description: Return a summary representation of the aircraft's state.
+      parameters:
+        - $ref: '#/components/parameters/aircraftId'
+      responses:
+        '200':
+          description: Aircraft state summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateResponse'
+        '404':
+          description: Aircraft not found (note - implementation creates services on demand)
+  /aircraft/{aircraft_id}/ping:
+    get:
+      summary: Aircraft ping payload
+      description: Return the ping payload for an aircraft (used by clients to check connectivity / metadata).
+      parameters:
+        - $ref: '#/components/parameters/aircraftId'
+      responses:
+        '200':
+          description: Ping payload for the aircraft
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AircraftPingResponse'
+  /aircraft/{aircraft_id}/inject_fault:
+    post:
+      summary: Enable or disable injected failures for an aircraft service
+      description: Toggle simulation of failure modes for testing.
+      parameters:
+        - $ref: '#/components/parameters/aircraftId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InjectFaultRequest'
+      responses:
+        '200':
+          description: Fault injection updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InjectFaultResponse'
+        '400':
+          description: Invalid parameters (e.g. unsupported mode)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /aircraft/{aircraft_id}/reset:
+    post:
+      summary: Reset aircraft state
+      description: Reset the aircraft state to a clean slate.
+      parameters:
+        - $ref: '#/components/parameters/aircraftId'
+      responses:
+        '200':
+          description: Aircraft state reset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResetResponse'
+  /ping:
+    get:
+      summary: Headend ping
+      description: Return server time and number of known aircraft.
+      responses:
+        '200':
+          description: Headend heartbeat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeadendPingResponse'
+components:
+  parameters:
+    aircraftId:
+      name: aircraft_id
+      in: path
+      description: Unique aircraft identifier
+      required: true
+      schema:
+        type: string
+        example: AC001
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Human readable error message
+      required:
+        - ok
+        - error
+    ProcessingErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            lva:
+              type: integer
+              nullable: true
+              description: Last validated arrival (or similar LVA maintained by service)
+    AircraftListResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        aircraft:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              id:
+                type: string
+                description: Aircraft id
+              lva:
+                type: integer
+                nullable: true
+                description: Last validated arrival (or similar sequence number)
+              lkg:
+                type: string
+                nullable: true
+                description: LKG (last known good) version string
+            required:
+              - id
+      required:
+        - ok
+        - aircraft
+    ReceiveRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          description: Message type
+          enum: [FULL, PATCH, ROLLBACK]
+        payload:
+          type: object
+          description: Message payload. Schema varies by `type`.
+      required:
+        - type
+        - payload
+      example:
+        type: PATCH
+        payload:
+          changes:
+            - path: /example
+              op: replace
+              value: something
+    ReceiveResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        status:
+          type: object
+          nullable: true
+          description: Processing status returned by PATCH/ROLLBACK handlers (implementation-defined)
+        lva:
+          type: integer
+          nullable: true
+          description: Current LVA after processing
+      required:
+        - ok
+    StateResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        aircraft_id:
+          type: string
+        state:
+          type: object
+          description: The state summary returned by the RollbackService.state_summary()
+      required:
+        - ok
+        - aircraft_id
+        - state
+    AircraftPingResponse:
+      type: object
+      description: cargo from svc.ping_payload()
+      properties:
+        ok:
+          type: boolean
+          example: true
+        aircraft_id:
+          type: string
+          nullable: true
+        time:
+          type: string
+          format: date-time
+        meta:
+          type: object
+          nullable: true
+      required:
+        - ok
+    InjectFaultRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Whether to enable failure simulation
+          default: false
+        mode:
+          type: string
+          description: Failure mode name (implementation-defined)
+          example: none
+      required:
+        - enabled
+    InjectFaultResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        aircraft_id:
+          type: string
+        simulate_failure:
+          type: boolean
+        failure_mode:
+          type: string
+      required:
+        - ok
+        - aircraft_id
+    ResetResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        aircraft_id:
+          type: string
+        message:
+          type: string
+      required:
+        - ok
+        - aircraft_id
+        - message
+    HeadendPingResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        time:
+          type: string
+          format: date-time
+          description: UTC time string (ISO format)
+        aircraft_count:
+          type: integer
+          description: Number of known aircraft services in memory
+      required:
+        - ok
+        - time
+        - aircraft_count
