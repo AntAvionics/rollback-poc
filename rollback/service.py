@@ -139,6 +139,7 @@ class RollbackService:
           - raise an exception
         """
         s = self.state
+        active_snapshot = deepcopy(s.active)
 
         # Candidate is what active would become after applying the patch
         candidate = self.apply_patch_to_cfg(s.active, patch)
@@ -153,7 +154,7 @@ class RollbackService:
             # On validation failure, reconstruct active to last validated LVA and raise
             self.log.warning("Validation failed for candidate after applying patch: %s", err)
             # Ensure active is consistent with current authoritative LVA
-            self.reconstruct_active_for_lva(s.lva)
+            s.active = active_snapshot
             raise ValueError(err)
 
         # All good -> commit
